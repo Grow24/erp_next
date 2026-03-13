@@ -9,6 +9,8 @@ Docker images and orchestration for Frappe applications.
 
 This repository handles the containerization of the Frappe stack, including the application server, database, Redis, and supporting services. It provides quick disposable demo setups, a development environment, production-ready Docker images and compose configurations for deploying Frappe applications including ERPNext.
 
+> Local note: This README was edited to verify that local changes are being saved and tracked by git.
+
 ## Repository Structure
 
 ```
