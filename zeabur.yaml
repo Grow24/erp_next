@@ -1,0 +1,232 @@
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: grow24-erpnext
+  description: ERPNext (Frappe) multi-service stack based on frappe_docker pwd.yml
+spec:
+  variables:
+    ERPNEXT_VERSION:
+      type: STRING
+      default: v16.9.0
+    SITE_NAME:
+      type: STRING
+      default: frontend
+    ADMIN_PASSWORD:
+      type: STRING
+      default: admin
+    DB_ROOT_PASSWORD:
+      type: STRING
+      default: admin
+  services:
+    - name: db
+      template: PREBUILT
+      spec:
+        source:
+          image: mariadb:10.6
+        ports:
+          - id: mysql
+            port: 3306
+            type: TCP
+        volumes:
+          - id: db-data
+            dir: /var/lib/mysql
+        env:
+          MYSQL_ROOT_PASSWORD:
+            default: ${DB_ROOT_PASSWORD}
+            expose: false
+          MARIADB_ROOT_PASSWORD:
+            default: ${DB_ROOT_PASSWORD}
+            expose: false
+        instructions: |
+          MariaDB is running.
+          Root password: ${DB_ROOT_PASSWORD}
+
+    - name: redis-cache
+      template: PREBUILT
+      spec:
+        source:
+          image: redis:6.2-alpine
+        ports:
+          - id: redis
+            port: 6379
+            type: TCP
+
+    - name: redis-queue
+      template: PREBUILT
+      spec:
+        source:
+          image: redis:6.2-alpine
+        ports:
+          - id: redis
+            port: 6379
+            type: TCP
+        volumes:
+          - id: redis-queue-data
+            dir: /data
+
+    - name: backend
+      template: PREBUILT
+      spec:
+        source:
+          image: frappe/erpnext:${ERPNEXT_VERSION}
+        dependencies:
+          - db
+          - redis-cache
+          - redis-queue
+        volumes:
+          - id: sites
+            dir: /home/frappe/frappe-bench/sites
+          - id: logs
+            dir: /home/frappe/frappe-bench/logs
+        env:
+          DB_HOST:
+            default: db.zeabur.internal
+            expose: false
+          DB_PORT:
+            default: "3306"
+            expose: false
+          MYSQL_ROOT_PASSWORD:
+            default: ${DB_ROOT_PASSWORD}
+            expose: false
+          MARIADB_ROOT_PASSWORD:
+            default: ${DB_ROOT_PASSWORD}
+            expose: false
+          REDIS_CACHE:
+            default: redis-cache.zeabur.internal:6379
+            expose: false
+          REDIS_QUEUE:
+            default: redis-queue.zeabur.internal:6379
+            expose: false
+
+    - name: websocket
+      template: PREBUILT
+      spec:
+        source:
+          image: frappe/erpnext:${ERPNEXT_VERSION}
+        dependencies:
+          - backend
+        command:
+          - node
+          - /home/frappe/frappe-bench/apps/frappe/socketio.js
+        volumes:
+          - id: sites
+            dir: /home/frappe/frappe-bench/sites
+          - id: logs
+            dir: /home/frappe/frappe-bench/logs
+        env:
+          FRAPPE_REDIS_CACHE:
+            default: redis://redis-cache.zeabur.internal:6379
+            expose: false
+          FRAPPE_REDIS_QUEUE:
+            default: redis://redis-queue.zeabur.internal:6379
+            expose: false
+
+    - name: queue-short
+      template: PREBUILT
+      spec:
+        source:
+          image: frappe/erpnext:${ERPNEXT_VERSION}
+        dependencies:
+          - backend
+        command: bench worker --queue short,default
+        volumes:
+          - id: sites
+            dir: /home/frappe/frappe-bench/sites
+          - id: logs
+            dir: /home/frappe/frappe-bench/logs
+        env:
+          FRAPPE_REDIS_CACHE:
+            default: redis://redis-cache.zeabur.internal:6379
+            expose: false
+          FRAPPE_REDIS_QUEUE:
+            default: redis://redis-queue.zeabur.internal:6379
+            expose: false
+
+    - name: queue-long
+      template: PREBUILT
+      spec:
+        source:
+          image: frappe/erpnext:${ERPNEXT_VERSION}
+        dependencies:
+          - backend
+        command: bench worker --queue long,default,short
+        volumes:
+          - id: sites
+            dir: /home/frappe/frappe-bench/sites
+          - id: logs
+            dir: /home/frappe/frappe-bench/logs
+        env:
+          FRAPPE_REDIS_CACHE:
+            default: redis://redis-cache.zeabur.internal:6379
+            expose: false
+          FRAPPE_REDIS_QUEUE:
+            default: redis://redis-queue.zeabur.internal:6379
+            expose: false
+
+    - name: scheduler
+      template: PREBUILT
+      spec:
+        source:
+          image: frappe/erpnext:${ERPNEXT_VERSION}
+        dependencies:
+          - backend
+        command: bench schedule
+        volumes:
+          - id: sites
+            dir: /home/frappe/frappe-bench/sites
+          - id: logs
+            dir: /home/frappe/frappe-bench/logs
+
+    - name: frontend
+      template: PREBUILT
+      spec:
+        source:
+          image: frappe/erpnext:${ERPNEXT_VERSION}
+        dependencies:
+          - backend
+          - websocket
+        command:
+          - nginx-entrypoint.sh
+        ports:
+          - id: http
+            port: 8080
+            type: HTTP
+        volumes:
+          - id: sites
+            dir: /home/frappe/frappe-bench/sites
+          - id: logs
+            dir: /home/frappe/frappe-bench/logs
+        env:
+          BACKEND:
+            default: backend.zeabur.internal:8000
+            expose: false
+          SOCKETIO:
+            default: websocket.zeabur.internal:9000
+            expose: false
+          FRAPPE_SITE_NAME_HEADER:
+            default: ${SITE_NAME}
+            expose: false
+          UPSTREAM_REAL_IP_ADDRESS:
+            default: 127.0.0.1
+            expose: false
+          UPSTREAM_REAL_IP_HEADER:
+            default: X-Forwarded-For
+            expose: false
+          UPSTREAM_REAL_IP_RECURSIVE:
+            default: "off"
+            expose: false
+          PROXY_READ_TIMEOUT:
+            default: "120"
+            expose: false
+          CLIENT_MAX_BODY_SIZE:
+            default: 50m
+            expose: false
+        instructions: |
+          After first deploy you must run one-time initialization commands on the backend service:
+          1) bench set-config -g db_host db.zeabur.internal
+          2) bench set-config -gp db_port 3306
+          3) bench set-config -g redis_cache "redis://redis-cache.zeabur.internal:6379"
+          4) bench set-config -g redis_queue "redis://redis-queue.zeabur.internal:6379"
+          5) bench set-config -g redis_socketio "redis://redis-queue.zeabur.internal:6379"
+          6) bench set-config -gp socketio_port 9000
+          7) bench new-site ${SITE_NAME} --mariadb-user-host-login-scope='%' --admin-password=${ADMIN_PASSWORD} --db-root-username=root --db-root-password=${DB_ROOT_PASSWORD} --install-app erpnext --set-default ${SITE_NAME}
